@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from surge.inference import _aggregate_scores, _strict_score
+from surge.inference import _aggregate_scores, _strict_score, log_end, log_start, log_step
 from surge.tasks import TASKS, create_grader
 
 
@@ -85,3 +85,19 @@ def test_raw_clamp_extremes_are_bounded(task_id: str) -> None:
     grader = create_grader(task_id)
     _assert_in_bounds(grader._clamp(-999.0))
     _assert_in_bounds(grader._clamp(999.0))
+
+
+def test_inference_output_format(capsys) -> None:
+    log_start(task="click-test", env="miniwob", model="Qwen3-VL-30B")
+    log_step(step=1, action="click('123')", reward=0.0, done=False, error=None)
+    log_step(step=2, action="fill('456','text')", reward=0.0, done=False, error=None)
+    log_step(step=3, action="click('789')", reward=1.0, done=True, error=None)
+    log_end(success=True, steps=3, score=0.98, rewards=[0.0, 0.0, 1.0])
+
+    assert capsys.readouterr().out.strip().splitlines() == [
+        "[START] task=click-test env=miniwob model=Qwen3-VL-30B",
+        "[STEP] step=1 action=click('123') reward=0.00 done=false error=null",
+        "[STEP] step=2 action=fill('456','text') reward=0.00 done=false error=null",
+        "[STEP] step=3 action=click('789') reward=1.00 done=true error=null",
+        "[END] success=true steps=3 score=0.980 rewards=0.00,0.00,1.00",
+    ]

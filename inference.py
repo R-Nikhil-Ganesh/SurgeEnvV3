@@ -19,6 +19,8 @@ from surge.tasks import TASKS, create_grader
 
 _SCORE_EPS = 2e-2
 _SCORE_ONE = 1 - _SCORE_EPS
+BENCHMARK = os.getenv("SURGE_BENCHMARK", "surge")
+SUCCESS_SCORE_THRESHOLD = 0.1
 
 
 def _assert_bounded_score(value: float) -> float:
@@ -42,11 +44,28 @@ def _aggregate_scores(scores: list[float]) -> float:
     return _strict_score(sum(scores) / len(scores))
 
 
-def _log(tag: str, payload: Any) -> None:
-    if isinstance(payload, str):
-        print(f"[{tag}] {payload}")
-        return
-    print(f"[{tag}] " + json.dumps(payload, sort_keys=True))
+def _format_bool(value: bool) -> str:
+    return str(bool(value)).lower()
+
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: str | None) -> None:
+    error_val = error if error else "null"
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={_format_bool(done)} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: list[float]) -> None:
+    rewards_str = ",".join(f"{reward:.2f}" for reward in rewards)
+    print(
+        f"[END] success={_format_bool(success)} steps={steps} score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
 
 
 def _load_env() -> None:
@@ -204,62 +223,66 @@ def run_task(
     task = TASKS[task_id]
     grader = create_grader(task_id)
 
-    _log(
-        "START",
-        {
-            "difficulty": task.difficulty,
-            "env": env_base_url,
-            "seed": seed,
-            "task": task.id,
-        },
-    )
+    log_start(task=task.id, env=BENCHMARK, model=model_name)
 
     start = time.time()
     max_steps = 60
+    rewards: list[float] = []
+    success = False
+    score = _SCORE_EPS
+    steps = 0
 
-    with SurgeEnv(base_url=env_base_url).sync() as env:
-        reset_result = env.reset(seed=seed)
-        obs = reset_result.observation
+    failure_message: str | None = None
+    final_reward = 0.0
+    state = None
 
-        done = reset_result.done
-        steps = 0
-        final_reward = float(reset_result.reward or 0.0)
+    try:
+        with SurgeEnv(base_url=env_base_url).sync() as env:
+            reset_result = env.reset(seed=seed)
+            obs = reset_result.observation
 
-        while not done and steps < max_steps:
-            steps += 1
-            action_value = _model_action(
-                client=client,
-                model_name=model_name,
-                task_name=task.name,
-                obs=obs,
-            )
+            done = reset_result.done
+            final_reward = float(reset_result.reward or 0.0)
 
-            step_result = env.step(SurgeAction(action=action_value))
-            obs = step_result.observation
-            done = step_result.done
-            final_reward = float(step_result.reward or 0.0)
+            while not done and steps < max_steps:
+                steps += 1
+                action_value = _model_action(
+                    client=client,
+                    model_name=model_name,
+                    task_name=task.name,
+                    obs=obs,
+                )
 
-            score_update = _strict_score(float(grader(SurgeAction(action=action_value), obs)))
+                try:
+                    step_result = env.step(SurgeAction(action=action_value))
+                except Exception as exc:
+                    failure_message = str(exc)
+                    log_step(step=steps, action=str(action_value), reward=0.0, done=True, error=failure_message)
+                    break
 
-            _log(
-                "STEP",
-                {
-                    "action": action_value,
-                    "done": done,
-                    "nodes": int(obs.active_nodes),
-                    "queue": round(float(obs.true_queue), 3),
-                    "reward": round(final_reward, 4),
-                    "score_update": round(score_update, 6),
-                    "sla": round(float(obs.true_sla), 6),
-                    "step": steps,
-                    "task": task.id,
-                },
-            )
+                obs = step_result.observation
+                done = step_result.done
+                final_reward = float(step_result.reward or 0.0)
+                rewards.append(final_reward)
 
-        state = env.state()
+                grader(SurgeAction(action=action_value), obs)
+
+                log_step(step=steps, action=str(action_value), reward=final_reward, done=done, error=None)
+
+            state = env.state()
+    except Exception as exc:
+        failure_message = str(exc)
 
     elapsed_s = time.time() - start
     final_score = _strict_score(float(grader.last_score if grader.last_score is not None else _SCORE_EPS))
+    score = final_score
+    success = failure_message is None and score >= SUCCESS_SCORE_THRESHOLD
+
+    if state is None:
+        # Keep the summary structure stable even if initialization failed.
+        from types import SimpleNamespace
+
+        state = SimpleNamespace(terminated_early=False, cumulative_reward=0.0, termination_reason="none")
 
     result = {
         "task_id": task.id,
@@ -273,7 +296,7 @@ def run_task(
         "termination_reason": state.termination_reason,
         "elapsed_s": round(elapsed_s, 3),
     }
-    _log("END", result)
+    log_end(success=success, steps=steps, score=score, rewards=rewards)
     return result
 
 
@@ -291,7 +314,7 @@ def main() -> None:
         ("adaptive_sre", 789),
     ]
 
-    all_results = [
+    for task_id, seed in runs:
         run_task(
             env_base_url=env_base_url,
             client=client,
@@ -299,12 +322,6 @@ def main() -> None:
             task_id=task_id,
             seed=seed,
         )
-        for task_id, seed in runs
-    ]
-
-    aggregate = _aggregate_scores([float(result["score"]) for result in all_results])
-    _log("END", {"scoreboard": all_results})
-    _log("END", {"final_score": round(_strict_score(float(aggregate)), 6)})
 
 
 if __name__ == "__main__":
