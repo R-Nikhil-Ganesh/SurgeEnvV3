@@ -13,6 +13,12 @@ Difficulty = Literal["easy", "medium", "hard"]
 _SCORE_EPS = 2e-2
 _SCORE_ONE = 1 - _SCORE_EPS
 
+def _bounded_score(value: float) -> float:
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        return _SCORE_EPS
+    return max(_SCORE_EPS, min(_SCORE_ONE, numeric))
+
 
 class TaskDefinition(BaseModel):
     """Declarative task configuration used by inference and manifests."""
@@ -32,7 +38,7 @@ class SurgeTaskRubric(Rubric):
         self.reset()
 
     def reset(self) -> None:
-        self.last_score = _SCORE_EPS
+        self.last_score = _bounded_score(_SCORE_EPS)
         self._steps = 0
         self._min_sla = _SCORE_ONE
         self._sum_nodes = 0.0
@@ -70,21 +76,22 @@ class SurgeTaskRubric(Rubric):
         # Strictly bound between > 0.0 and < 1.0, including non-finite safety.
         numeric = float(value)
         if not math.isfinite(numeric):
-            return _SCORE_EPS
-        return max(_SCORE_EPS, min(1 - _SCORE_EPS, numeric))
+            return _bounded_score(_SCORE_EPS)
+        clamped = max(_SCORE_EPS, min(1 - _SCORE_EPS, numeric))
+        return _bounded_score(clamped)
 
     def forward(self, action: Any, observation: Any) -> float:
         del action
         self._track(observation)
         if not bool(getattr(observation, "done", False)):
             # Never return exact 0.0 on intermediate steps
-            self.last_score = _SCORE_EPS
-            return _SCORE_EPS
+            self.last_score = _bounded_score(_SCORE_EPS)
+            return self.last_score
 
         score = self._final_score(observation)
         score = self._clamp(score)
-        self.last_score = score
-        return score
+        self.last_score = _bounded_score(score)
+        return self.last_score
 
     def _final_score(self, observation: Any) -> float:
         del observation

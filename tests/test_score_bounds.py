@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from surge.inference import _strict_score
+from surge.inference import _aggregate_scores, _strict_score
 from surge.tasks import TASKS, create_grader
 
 
@@ -27,6 +27,7 @@ def _observation(**overrides):
 
 
 def _assert_in_bounds(value: float) -> None:
+    assert isinstance(value, float)
     assert SCORE_MIN <= value <= SCORE_MAX
     assert value != 0.0
     assert value != 1.0
@@ -35,6 +36,11 @@ def _assert_in_bounds(value: float) -> None:
 @pytest.mark.parametrize("value", [float("-inf"), -1.0, 0.0, 0.5, 1.0, float("inf"), float("nan")])
 def test_strict_score_helper_is_bounded(value: float) -> None:
     _assert_in_bounds(_strict_score(value))
+
+
+def test_aggregate_scores_is_bounded() -> None:
+    _assert_in_bounds(_aggregate_scores([]))
+    _assert_in_bounds(_aggregate_scores([0.02, 0.5, 0.98]))
 
 
 @pytest.mark.parametrize("task_id", sorted(TASKS))
@@ -72,3 +78,10 @@ def test_task_grader_scores_are_bounded(task_id: str) -> None:
 
 def test_all_task_metadata_exists() -> None:
     assert sorted(TASKS) == ["adaptive_sre", "cost_aware_mitigation", "survive_spike"]
+
+
+@pytest.mark.parametrize("task_id", sorted(TASKS))
+def test_raw_clamp_extremes_are_bounded(task_id: str) -> None:
+    grader = create_grader(task_id)
+    _assert_in_bounds(grader._clamp(-999.0))
+    _assert_in_bounds(grader._clamp(999.0))

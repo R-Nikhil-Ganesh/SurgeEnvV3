@@ -18,13 +18,28 @@ from surge.tasks import TASKS, create_grader
 
 
 _SCORE_EPS = 2e-2
+_SCORE_ONE = 1 - _SCORE_EPS
+
+
+def _assert_bounded_score(value: float) -> float:
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        return _SCORE_EPS
+    return max(_SCORE_EPS, min(_SCORE_ONE, numeric))
 
 
 def _strict_score(value: float) -> float:
     numeric = float(value)
     if not math.isfinite(numeric):
-        return _SCORE_EPS
-    return max(_SCORE_EPS, min(1 - _SCORE_EPS, numeric))
+        return _assert_bounded_score(_SCORE_EPS)
+    clamped = max(_SCORE_EPS, min(1 - _SCORE_EPS, numeric))
+    return _assert_bounded_score(clamped)
+
+
+def _aggregate_scores(scores: list[float]) -> float:
+    if not scores:
+        return _assert_bounded_score(_SCORE_EPS)
+    return _strict_score(sum(scores) / len(scores))
 
 
 def _log(tag: str, payload: Any) -> None:
@@ -287,9 +302,9 @@ def main() -> None:
         for task_id, seed in runs
     ]
 
-    aggregate = sum(result["score"] for result in all_results) / max(1, len(all_results))
+    aggregate = _aggregate_scores([float(result["score"]) for result in all_results])
     _log("END", {"scoreboard": all_results})
-    _log("END", {"final_score": round(float(aggregate), 6)})
+    _log("END", {"final_score": round(_strict_score(float(aggregate)), 6)})
 
 
 if __name__ == "__main__":
