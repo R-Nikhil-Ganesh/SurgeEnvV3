@@ -328,5 +328,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        _log("END", {"event": "inference_failed", "error": str(exc)})
+        log_end(success=False, steps=0, score=_SCORE_EPS, rewards=[])
         raise
